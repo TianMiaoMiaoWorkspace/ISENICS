@@ -1,11 +1,3 @@
-# umap_data <- as.data.frame(Embeddings(scRNA, reduction = "umap"))
-# umap_data$ident <- scRNA@meta.data$orig.ident
-# ggplot(umap_data, aes(x = UMAP_1, y = UMAP_2, color = ident)) +
-#   geom_point(alpha = 0.2, size = ) +
-#   ggtitle("UMAP (Before Batch Correction)") +
-#   theme_minimal()
-#https://blog.csdn.net/zfyyzhys/article/details/141048663
-# pak::pkg_install("DALEX")
 library(R.utils)
 library(Seurat)
 library(data.table)
@@ -18,7 +10,90 @@ library(clustree)
 library(patchwork)
 library(GSVA)
 library(pROC)
-setwd("E:\\InPut\\免疫应答")
+library(rio)
+library(DoubletFinder)
+library(scCDC)
+
+###############seurat GSE203115###############
+folder_path <- ".\\GSE203115"
+subfolders <- list.dirs(folder_path, full.names = TRUE, recursive = TRUE)
+for (subfolder in subfolders) {
+  gz_files <- list.files(subfolder, pattern = "\\.gz$", full.names = TRUE)
+  if (length(gz_files) > 0) {
+    for (gz_file in gz_files) {
+      gunzip(gz_file, overwrite = TRUE) 
+    }
+  }
+}
+
+dir="./GSE203115/raw/"
+samples=list.files( dir )
+sceList = lapply(samples,function(pro){
+  print(pro)
+  tmp = Read10X(file.path(dir,pro ))
+  sce =CreateSeuratObject(counts =  tmp ,
+                          project =  pro  ,
+                          min.cells = 5,
+                          min.features = 200 )
+  return(sce)
+})
+View(sceList)
+#####merge sample
+do.call(rbind,lapply(sceList, dim))
+GSE203115=merge(x=sceList[[1]],
+              y=sceList[ -1 ],
+              add.cell.ids = samples  )
+
+########添加meta信息
+phe = GSE203115@meta.data
+table(phe$orig.ident)
+# View(phe)
+phe$response = case_when(phe$orig.ident=="GSE203115ESCC1"~"R",
+                      phe$orig.ident=="GSE203115ESCC2"~"NR",
+                      phe$orig.ident=="GSE203115ESCC3"~"R")
+GSE203115@meta.data = phe
+
+saveRDS(GSE203115,".\\GSE203115.rds")
+
+###################质量控制#####################
+GSE203115<-import("GSE203115.txt")
+GSE203115<-GSE203115%>%column_to_rownames("V1")
+GSE203115<- CreateSeuratObject(count, min.cells = 3, min.features = 200)  # 创建Seurat对象
+
+GSE203115<-readRDS("GSE203115.rds")
+
+
+count=GSE203115
+res<-add_percent_features(count,"human")
+res<-QC_mad_filter(res)
+VlnPlot(res, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rb", "percent.hb"),
+        ncol = 5, pt.size = 0.1, combine = TRUE) +theme(plot.title = element_text(size = 10))
+res<-QC_SC_FilterContamination(res,nCount_RNA_filter = 500,
+                               nFeature_RNA_filter = 250,
+                               percent.mt_filter = 12, ####difined by vlnplot
+                               percent.rb_filter=50,
+                               percent.hb_filter=2)
+best.pc<-QC_best.pc(res,pc.contribution=90)
+#dim.usage difined by best.pc
+dim.usage=21
+
+res<-QC_RM_doublet(res,dim.usage,doublet_rate=8)
+res<-QC_RNA_corrected(res,dim.usage)
+res <- subset(res, Doublet == "Singlet")
+res@meta.data <- select(res@meta.data, -Doublet)
+saveRDS(res,"QCGSE203115.RData")
+
+
+
+#### same work flow for GSE145281 and GSE207422 were omitted
+
+# GSE145281:14474->12242
+# GSE207422:83230->79204
+# GSE203115:12762->9380
+
+
+###################细胞注释#####################
+
 GSE207422<-readRDS("GSE207422.RData")
 GSE207422$Doublet<-NULL
 GSE207422$orig.ident<-GSE207422$sample
